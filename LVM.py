@@ -57,6 +57,7 @@ class MixtureOfExperts_Classifier():
         # dataTest should be a tuple of (X,Y) for monitoring
         # dataTrain should be a tuple of (X,Y) for training
         # score is either accuracy or mle
+        # assume X has a column of ones for intercept
         X_train, Y_train = dataTrain
         Y_train_long = y2long(Y_train,self.K1)
         if dataTest is not None:
