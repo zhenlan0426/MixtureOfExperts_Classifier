@@ -1,7 +1,7 @@
 import numpy as np
 
-def softmax(X):
-    temp = np.exp(X)
+def stable_softmax(X):
+    temp = np.exp(X + np.mean(X,1,keepdims=True))
     return temp/np.sum(temp,1,keepdims=True)
 
 def y2long(Y,k):
@@ -21,13 +21,12 @@ class MixtureOfExperts_Classifier():
         self.theta = np.random.randn(d,K2)/d
     
     def infer_Z_given_X(self,X):
-        return softmax(np.dot(X,self.theta))
+        return stable_softmax(np.dot(X,self.theta))
         
     def infer_Y_given_XZ(self,X):
         # compute prob of Y|X,Z for all possible Y,Z
         # return array of shape (N,K1,K2)
-        temp = np.exp(np.einsum('nd,dpq->npq', X, self.beta))
-        return temp/np.sum(temp,1,keepdims=True)
+        return stable_softmax(np.einsum('nd,dpq->npq', X, self.beta))
     
     def infer_Z_given_XY(self,X,Y,returnAll=False):
         # Y take val in {0,1,...K1-1}
@@ -57,7 +56,6 @@ class MixtureOfExperts_Classifier():
         # dataTest should be a tuple of (X,Y) for monitoring
         # dataTrain should be a tuple of (X,Y) for training
         # score is either accuracy or mle
-        # assume X has a column of ones for intercept
         X_train, Y_train = dataTrain
         Y_train_long = y2long(Y_train,self.K1)
         if dataTest is not None:
@@ -108,3 +106,13 @@ dataTest = dataGen(n,d,theta,beta,noise=0.1)
 model = MixtureOfExperts_Classifier(k1,k2,d)
 model.fit(1e-2,100,100,dataTrain,dataTest)
 '''
+
+
+
+
+
+
+
+
+
+
