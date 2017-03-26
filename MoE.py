@@ -180,11 +180,11 @@ class MixtureOfExperts_Classifier2():
         Z_givenXY, Z_givenX, Y_givenXZ,Like_Y_givenXZ = self.infer_Z_given_XY(X,Y,returnAll=True)
         
         n = X.shape[0]
-        self.estZ.update(learnR * np.dot(X.T,Z_givenXY-Z_givenX)/n) 
+        self.estZ.update(X,learnR * np.dot(X.T,Z_givenXY-Z_givenX)/n) 
         Y_long = y2long(Y,self.K1) # update beta
         G_beta = learnR * np.einsum('nq,npq->npq',Z_givenXY,np.expand_dims(Y_long,-1) - Y_givenXZ)
         for i in range(self.K2):
-            self.estY[i].update(G_beta[:,:,i])
+            self.estY[i].update(X,G_beta[:,:,i])
 
                                         
     def fit(self,learnR,iterN,batchSize,dataTrain,dataTest=None,score='acc'):
