@@ -12,6 +12,7 @@ def y2long(Y,k):
 
 class MixtureOfExperts_Classifier():
     # implement MLAPP,11.2.4 Mixtures of experts
+    # both P(Y|X,Z) and P(Z|X) is modeled via logistic regressions
     
     def __init__(self,K1,K2,d):
         self.K1 = K1 # for Y
@@ -50,8 +51,9 @@ class MixtureOfExperts_Classifier():
         
         # update beta
         Y_long = y2long(Y,self.K1)
-        self.beta += learnR * np.einsum('nd,npq->dpq',X,np.einsum('np,nq->npq',Y_long,Like_Y_givenXZ)-Y_givenXZ)/n
-        
+        self.beta += learnR * np.einsum('nd,npq->dpq',X,\
+                                        np.einsum('nq,npq->npq',Z_givenXY,np.expand_dims(Y_long,-1) - Y_givenXZ))/n
+                                        
     def fit(self,learnR,iterN,batchSize,dataTrain,dataTest=None,score='acc'):
         # dataTest should be a tuple of (X,Y) for monitoring
         # dataTrain should be a tuple of (X,Y) for training
@@ -84,35 +86,29 @@ class MixtureOfExperts_Classifier():
 
 
 ''' test case
+import matplotlib.pyplot as plt
+
 n = 10000
 d = 10
 k1 = 5
 k2 = 3
-
 theta = np.random.randn(d,k2)
 beta = np.random.randn(d,k1,k2)
-
 def dataGen(n,d,theta,beta,noise=0.1):
     X = np.random.randn(n,d)
     Z = np.argmax(np.dot(X,theta) + np.random.randn(n,k2) * noise,1)
     Y = np.einsum('nd,dpq->npq',X,beta) + np.random.randn(n,k1,k2) * noise
     Y = np.argmax(Y[range(n),:,Z],1)
     return X,Y
-
 dataTrain = dataGen(n,d,theta,beta,noise=0.1)
 dataTest = dataGen(n,d,theta,beta,noise=0.1)
-
-
 model = MixtureOfExperts_Classifier(k1,k2,d)
 model.fit(1e-2,100,100,dataTrain,dataTest)
+
+z = model.infer_Z_given_X(dataTrain[0])
+plt.hist(z.flatten())
+
+y = model.infer_Y_given_XZ(dataTrain[0])
+np.std(y,2).max()
+np.std(y,2).min()
 '''
-
-
-
-
-
-
-
-
-
-
