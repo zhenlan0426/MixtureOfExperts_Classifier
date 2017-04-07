@@ -389,3 +389,21 @@ class LR_KClass_MoE():
         
     def predict_proba(self,X):
         return stable_softmax(self.predict_raw(X))
+
+from sklearn.tree import ExtraTreeRegressor
+baselineY = p2logit(y2long(y_train,10).sum(0)/y_train.shape[0],10)
+
+estY = [#GBM_KClass_MoE(ExtraTreeRegressor,\
+                       #{'max_depth':12,'splitter':'random','max_features':0.2},baselineY,784+1,0)#,\
+
+       LR_KClass_MoE(10,784+1,1e-2,0),\
+           LR_KClass_MoE(10,784+1,1e-2,0),\
+           LR_KClass_MoE(10,784+1,1e-2,0),\
+       LR_KClass_MoE(10,784+1,1e-2,0),\
+       LR_KClass_MoE(10,784+1,1e-2,0)
+        ]
+
+k2 = len(estY)
+baselineZ = np.random.randn(k2)/k2/10
+estZ = LR_KClass_MoE(k2,784+1,1e-2,0)
+model = MixtureOfExperts_Classifier2(10,k2,784+1,estZ,estY)
