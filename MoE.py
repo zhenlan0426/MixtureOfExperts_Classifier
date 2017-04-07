@@ -160,12 +160,10 @@ class MixtureOfExperts_Classifier2():
         self.estZ = estZ
         self.estY = estY
 
+            
     def infer_Z_given_X(self,X,sub_index=None):
-        if isinstance(self.estZ,list):
-            return sum([est.predict_proba(X,sub_index) if isinstance(est,GBM_KClass_MoE) \
-                                                        else est.predict_proba(X) for est in self.estZ])
-        else:
-            return self.estZ.predict_proba(X)
+        return self.estZ.predict_proba(X,sub_index) if isinstance(self.estZ,GBM_KClass_MoE) \
+                                                        else self.estZ.predict_proba(X)
         
     def infer_Y_given_XZ(self,X,sub_index=None):
         # compute prob of Y|X,Z for all possible Y,Z
@@ -185,14 +183,18 @@ class MixtureOfExperts_Classifier2():
         else:
             return temp/np.sum(temp,1,keepdims=True)
             
-    def inference_grad(self,X,Y,learnR,sub_index):
+    def inference_grad(self,X,Y,sub_index):
         # calculate the gradient wrt pre-softmax layer for P(Z|X) and P(Y|X,Z)
         Y_long = y2long(Y,self.K1)
         Z_givenXY, Z_givenX, Y_givenXZ,Like_Y_givenXZ = self.infer_Z_given_XY(X,Y,sub_index,returnAll=True)
-        return learnR * (Z_givenXY-Z_givenX), learnR * np.einsum('nq,npq->npq',Z_givenXY,np.expand_dims(Y_long,-1) - Y_givenXZ)
+        return (Z_givenXY-Z_givenX), np.einsum('nq,npq->npq',Z_givenXY,np.expand_dims(Y_long,-1) - Y_givenXZ)
     
+    def inference_grad_Z(self,X,Like_Y_given_XZ,sub_index):
+        P_Z_given_X = self.infer_Z_given_X(X,sub_index)
+        temp = P_Z_given_X * Like_Y_given_XZ
+        return temp/np.sum(temp,1,keepdims=True) - P_Z_given_X
                                         
-    def fit(self,learnR,iterN,batchSize,dataTrain,dataTest=None,score='acc'):
+    def fit(self,iterN,batchSize,dataTrain,dataTest=None,score='acc',fixedY=False):
         # dataTest should be a tuple of (X,Y) for monitoring
         # dataTrain should be a tuple of (X,Y) for training
         # score is either accuracy or mle
@@ -207,47 +209,62 @@ class MixtureOfExperts_Classifier2():
             if isinstance(est_y,GBM_KClass_MoE):
                 est_y.cache = np.zeros((n,self.K1)) + est_y.baseline
                 
-        for est_z in self.estZ:
-            if isinstance(est_z,GBM_KClass_MoE):
-                est_z.cache = np.zeros((n,self.K2)) + est_z.baseline    
+
+        if isinstance(self.estZ,GBM_KClass_MoE):
+            self.estZ.cache = np.zeros((n,self.K2)) + self.estZ.baseline    
                 
         if dataTest is not None:
             scoreFun = lambda y,yhat: np.mean(np.argmax(y,1)==np.argmax(yhat,1)) \
                             if score == 'acc' else lambda y,yhat: np.mean(y*np.log(yhat)) 
-                
+        
+        if fixedY:
+            P_Y_given_XZ = self.infer_Y_given_XZ(X_train)
+            Like_Y_given_XZ = P_Y_given_XZ[range(n),Y_train,:]
+            if dataTest is not None:
+                P_Y_given_XZ_test = self.infer_Y_given_XZ(X_test)
+            
         batchN = int(n/batchSize)
         for i in range(iterN):
             index = np.random.permutation(n)
             for j in range(batchN):
                 sub_index = index[j*batchSize:(j+1)*batchSize]
                 non_index = index[range(j*batchSize)+range((j+1)*batchSize,n)]
-                grad_Z, grad_Y = self.inference_grad(X_train[sub_index],Y_train[sub_index],learnR,sub_index)
-                # update P(Y|Z,X)
-                for k,est_y in enumerate(self.estY):
-                    if isinstance(est_y,GBM_KClass_MoE):
-                        est_y.update(X_train,grad_Y[:,:,k],sub_index,non_index)
-                    else:
-                        est_y.update(X_train[sub_index],grad_Y[:,:,k])
+                if fixedY:
+                    grad_Z = self.inference_grad_Z(X_train[sub_index],Like_Y_given_XZ[sub_index],sub_index)
+                else:
+                    grad_Z, grad_Y = self.inference_grad(X_train[sub_index],Y_train[sub_index],sub_index)
+                    # update P(Y|Z,X)
+                    for k,est_y in enumerate(self.estY):
+                        if isinstance(est_y,GBM_KClass_MoE):
+                            est_y.update(X_train,grad_Y[:,:,k],sub_index,non_index)
+                        else:
+                            est_y.update(X_train[sub_index],grad_Y[:,:,k])
                     
                 # update P(Z|X):
-                for k,est_y in enumerate(self.estZ):
-                    if isinstance(est_y,GBM_KClass_MoE):
-                        est_y.update(X_train,grad_Z,sub_index,non_index)
-                    else:
-                        est_y.update(X_train[sub_index],grad_Z)
-                
-            if dataTest is not None: # monitor
-                print 'iteration {}, train {}, test {}'\
-                    .format(i,scoreFun(Y_train_long,self.predict_Y_given_X(X_train)), \
-                              scoreFun(Y_test_long,self.predict_Y_given_X(X_test)))
+
+                if isinstance(self.estZ,GBM_KClass_MoE):
+                    self.estZ.update(X_train,grad_Z,sub_index,non_index)
+                else:
+                    self.estZ.update(X_train[sub_index],grad_Z)
+            
+            if fixedY:
+                if dataTest is not None: # monitor
+                    print 'iteration {}, train {}, test {}'\
+                        .format(i,scoreFun(Y_train_long,self.predict_Y_given_X_FixedY(X_train,P_Y_given_XZ)), \
+                                  scoreFun(Y_test_long,self.predict_Y_given_X_FixedY(X_test,P_Y_given_XZ_test)))
+            else:
+                if dataTest is not None: # monitor
+                    print 'iteration {}, train {}, test {}'\
+                        .format(i,scoreFun(Y_train_long,self.predict_Y_given_X(X_train)), \
+                                  scoreFun(Y_test_long,self.predict_Y_given_X(X_test)))                
       
         for est_y in self.estY:
             if isinstance(est_y,GBM_KClass_MoE):
                 est_y.cache = None
                 
-        for est_z in self.estZ:
-            if isinstance(est_z,GBM_KClass_MoE):
-                est_z.cache = None
+
+        if isinstance(self.estZ,GBM_KClass_MoE):
+            self.estZ.cache = None
                     
     def predict_Y_given_X(self,X):
         # return P(Y|X) of shape (N,K1)
@@ -255,23 +272,68 @@ class MixtureOfExperts_Classifier2():
         P_Y_given_XZ = self.infer_Y_given_XZ(X)
         return np.einsum('nq,npq->np',P_Z_given_X,P_Y_given_XZ)
     
+    def predict_Y_given_X_FixedY(self,X,P_Y_given_XZ):
+        # return P(Y|X) of shape (N,K1)
+        P_Z_given_X = self.infer_Z_given_X(X)
+        return np.einsum('nq,npq->np',P_Z_given_X,P_Y_given_XZ)
     
      
 class GBM_KClass_MoE():
     # this class is specifically designed to work with MoE
 
-    def __init__(self,BaseEst,BasePara,baseline,d,subR=0.1):
+    def __init__(self,BaseEst,BasePara,baseline,d,learnR,M_est,subFold,subR=0.1):
         self.BaseEst=BaseEst
         self.estimator_=[]
         self.BasePara=BasePara
         self.cache = None # faster training, keep pre-softmax info
         self.baseline = baseline
         self.subFeature = np.random.rand(d) > subR
+        self.learnR = learnR
+        self.M_est=M_est
+        self.subFold=subFold
         
     def update(self,X,grad,index_,non_index):
         # add one base learner
-        self.estimator_.append(self.BaseEst(**self.BasePara).fit(X[index_][:,self.subFeature],grad))
+        self.estimator_.append(self.BaseEst(**self.BasePara).fit(X[index_][:,self.subFeature],grad*self.learnR))
         self.cache[non_index] += self.estimator_[-1].predict(X[non_index][:,self.subFeature])
+        
+        
+    def fit(self,X,y,restart=True,M_add=None):
+
+        N = len(y)
+        K = len(np.unique(y))
+        self.K=K
+        Y = y2long(y,K)
+        kf = KFold(N, n_folds=self.subFold)
+        
+        y_raw = Y + self.baseline
+        yp = stable_softmax(y_raw)
+        if M_add==None:
+            M_add=self.M_est
+            
+        if restart==True:
+            self.estimator_=[]
+        best_score = []
+        scoreFun = lambda y,yhat: np.mean(y*np.log(yhat)) 
+
+                                
+        for m in range(M_add):
+            index=np.random.permutation(N) # shuffle index for subsampling
+            X,Y,yp,y_raw,y = X[index],Y[index],yp[index],y_raw[index],y[index]
+
+            #for test,train in kf:
+            for train,test in kf:    
+                
+                self.estimator_.append(self.BaseEst(**self.BasePara).\
+                fit(X[test],(Y[test,:]-yp[test,:])*self.learnR))
+                y_raw[train]+=self.estimator_[-1].predict(X[train])
+                yp[train]=stable_softmax(y_raw[train])
+                best_score.append(scoreFun(Y,yp))
+        
+        self.M_est=len(self.estimator_)
+        plt.plot(best_score)
+        return self
+
         
     def predict_raw(self,X):
 
@@ -285,40 +347,45 @@ class GBM_KClass_MoE():
             return stable_softmax(self.predict_raw(X))
         else:
             return stable_softmax(self.cache[sub_index])
+        
+    def plot(self,X,y):
+        N = len(y)
 
+        accr=np.zeros(self.M_est)
+        y_raw=np.copy(self.baseline)
+            
+        for m in range(self.M_est):
+            y_raw= y_raw + self.estimator_[m].predict(X)
+            accr[m]=1.0*np.sum(y==np.argmax(y_raw,1))/N
+        plt.plot(accr)
+        
 class LR_KClass_MoE():
     # this class is specifically designed to work with MoE
 
-    def __init__(self,k,d,subR=0.1):
+    def __init__(self,k,d,learnR,subR=0.1):
         self.subFeature = np.random.rand(d) > subR
         self.d = self.subFeature.sum()
+        self.k = k
+        self.learnR = learnR
         self.beta = np.random.randn(self.d,k) / self.d
         
     def update(self,X,grad):
         n = X.shape[0]
-        self.beta += np.dot(X.T[self.subFeature],grad)/n
+        self.beta += np.dot(X.T[self.subFeature],grad*self.learnR)/n
+    
+    def fit(self,X,y,iterTimes,batchSize=100):
+        n = X.shape[0]        
+        batchN = int(n/batchSize)
+        Y = y2long(y,self.k)
+        for i in range(iterTimes):
+            index = np.random.permutation(n)
+            for j in range(batchN):
+                sub_index = index[j*batchSize:(j+1)*batchSize]
+                self.update(X[sub_index], Y[sub_index]-self.predict_proba(X[sub_index]))
+        return self
         
     def predict_raw(self,X):
         return np.dot(X[:,self.subFeature], self.beta)
         
     def predict_proba(self,X):
         return stable_softmax(self.predict_raw(X))
-    
-from sklearn.tree import ExtraTreeRegressor
-baselineY = p2logit(y2long(y_train,10).sum(0)/y_train.shape[0],10)
-
-estY = [#GBM_KClass_MoE(ExtraTreeRegressor,\
-                       #{'max_depth':12,'splitter':'random','max_features':0.2},baselineY,784+1,0)#,\
-
-       LR_KClass_MoE(10,784+1,0),\
-           LR_KClass_MoE(10,784+1,0),\
-           LR_KClass_MoE(10,784+1,0),\
-       LR_KClass_MoE(10,784+1,0),\
-       LR_KClass_MoE(10,784+1,0)
-        ]
-
-k2 = len(estY)
-baselineZ = np.random.randn(k2)/k2/2
-estZ = [GBM_KClass_MoE(ExtraTreeRegressor,\
-                       {'max_depth':12,'splitter':'random','max_features':0.2},baselineZ,784+1,0)]
-model = MixtureOfExperts_Classifier2(10,k2,784+1,estZ,estY)
