@@ -9,7 +9,7 @@ Created on Sat Mar 25 10:42:51 2017
 import numpy as np
 
 def stable_softmax(X):
-    temp = np.exp(X + np.mean(X,1,keepdims=True))
+    temp = np.exp(X - np.mean(X,1,keepdims=True))
     return temp/np.sum(temp,1,keepdims=True)
 
 def y2long(Y,k):
