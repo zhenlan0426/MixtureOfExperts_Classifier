@@ -23,6 +23,84 @@ def p2logit(p,k):
     temp[:k-1]=np.log(p[:k-1]/p[k-1])
     return temp
 
+class MixtureOfExperts_Reg(object):
+    
+    # P(Y|X,Z) modeled as normal with different beta and sigma for different Z 
+    # and P(Z|X) modeled via logistic regressions
+    # train/test data needs to have a column of one
+    
+    def __init__(self,K,d,beta_X=None,beta_Z=None,sigma=None):
+
+        self.K = K # for Z, hyper-parameter
+        self.d = d
+        self.beta_X = np.random.randn(d,K)/d if beta_X is None else beta_X
+        self.beta_Z = np.random.randn(d,K)/d if beta_Z is None else beta_Z
+        self.sigma = np.random.rand(1,K) if sigma is None else sigma
+        self.sqrt_sigma = np.sqrt(self.sigma)
+        
+    def stable_softmax(self,X):
+        temp = np.exp(X - np.mean(X,1,keepdims=True))
+        return temp/np.sum(temp,1,keepdims=True)
+    
+    def infer_Z_given_X(self,X):
+        return self.stable_softmax(np.dot(X,self.beta_Z))
+        
+    def infer_Y_given_XZ(self,X,Y):
+        # compute prob of Y|X,Z for all possible Z, up to a constant
+        # return array of shape (N,K)
+        temp = -0.5*(Y[:,np.newaxis] - np.dot(X,self.beta_X))**2/self.sigma
+        temp = temp - np.max(temp,1,keepdims=True)
+        return np.exp(temp)/np.sqrt(self.sigma)
+        
+    def infer_Z_given_XY(self,X,Y,returnAll=False):
+        P_Z_given_X = self.infer_Z_given_X(X)
+        P_Y_given_XZ = self.infer_Y_given_XZ(X,Y)
+        temp = P_Z_given_X * P_Y_given_XZ
+        if returnAll:
+            return temp/np.sum(temp,1,keepdims=True),P_Z_given_X
+        else:
+            return temp/np.sum(temp,1,keepdims=True)
+    
+    def infer_Y_given_X(self,X,Y):
+        # return shape (N,)
+        return np.sum(self.infer_Y_given_XZ(X,Y) * self.infer_Z_given_X(X),1)
+        
+    def update(self,X,Y,learnR):
+        # do one step SGD update
+        Z_givenXY, Z_givenX = self.infer_Z_given_XY(X,Y,returnAll=True)
+        n = X.shape[0]
+        self.beta_Z += learnR * np.dot(X.T,Z_givenXY-Z_givenX)/n 
+        temp = Y[:,np.newaxis]-np.dot(X,self.beta_X)
+        self.beta_X += learnR * np.dot(X.T,Z_givenXY*temp)/n 
+        self.sigma = np.sum(Z_givenXY*temp*temp,0,keepdims=True)/np.sum(Z_givenXY,0,keepdims=True)
+        
+    def fit(self,learnR,iterN,batchSize,dataTrain,dataTest=None):
+        # dataTest should be a tuple of (X,Y) for monitoring
+        # dataTrain should be a tuple of (X,Y) for training
+        # score is mle, should increase during training
+        X_train, Y_train = dataTrain
+        n = X_train.shape[0]
+        batchN = int(n/batchSize)
+        for i in range(iterN):
+            index = np.random.permutation(n)
+            for j in range(batchN):
+                sub_index = index[j*batchSize:(j+1)*batchSize]
+                self.update(X_train[sub_index],Y_train[sub_index],learnR)
+            if dataTest is not None:
+                X_test, Y_test = dataTest
+                print ('iteration {}, train {}, test {}'\
+                        .format(i,np.mean(self.infer_Y_given_X(X_train,Y_train)), \
+                              np.mean(self.infer_Y_given_X(X_test,Y_test))))
+        self.sqrt_sigma = np.sqrt(self.sigma)
+
+    def sample(self,X):
+        # return (N,) samples from P(Y|X)
+        n = X.shape[0]
+        prob_cum = np.cumsum(self.infer_Z_given_X(X),1)
+        random_nums = np.random.random_sample((n,1))
+        states = (random_nums > prob_cum).sum(axis=1)
+        return np.sum(X*self.beta_X[:,states].T,1) + np.random.randn(n)*(self.sqrt_sigma[:,states].flatten())
+
 class MixtureOfExperts_Classifier():
     # implement MLAPP,11.2.4 Mixtures of experts
     # both P(Y|X,Z) and P(Z|X) is modeled via logistic regressions
