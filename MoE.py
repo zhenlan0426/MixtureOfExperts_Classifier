@@ -45,11 +45,12 @@ class MixtureOfExperts_Reg(object):
     def infer_Z_given_X(self,X):
         return self.stable_softmax(np.dot(X,self.beta_Z))
         
-    def infer_Y_given_XZ(self,X,Y):
+    def infer_Y_given_XZ(self,X,Y,stable=True):
         # compute prob of Y|X,Z for all possible Z, up to a constant
         # return array of shape (N,K)
         temp = -0.5*(Y[:,np.newaxis] - np.dot(X,self.beta_X))**2/self.sigma
-        temp = temp - np.max(temp,1,keepdims=True)
+        if stable:
+            temp = temp - np.max(temp,1,keepdims=True)
         return np.exp(temp)/np.sqrt(self.sigma)
         
     def infer_Z_given_XY(self,X,Y,returnAll=False):
@@ -63,7 +64,7 @@ class MixtureOfExperts_Reg(object):
     
     def infer_Y_given_X(self,X,Y):
         # return shape (N,)
-        return np.sum(self.infer_Y_given_XZ(X,Y) * self.infer_Z_given_X(X),1)
+        return np.sum(self.infer_Y_given_XZ(X,Y,False) * self.infer_Z_given_X(X),1)
         
     def update(self,X,Y,learnR):
         # do one step SGD update
@@ -89,8 +90,8 @@ class MixtureOfExperts_Reg(object):
             if dataTest is not None:
                 X_test, Y_test = dataTest
                 print ('iteration {}, train {}, test {}'\
-                        .format(i,np.mean(self.infer_Y_given_X(X_train,Y_train)), \
-                              np.mean(self.infer_Y_given_X(X_test,Y_test))))
+                        .format(i,np.mean(np.log(self.infer_Y_given_X(X_train,Y_train))), \
+                              np.mean(np.log(self.infer_Y_given_X(X_test,Y_test)))))
         self.sqrt_sigma = np.sqrt(self.sigma)
 
     def sample(self,X):
